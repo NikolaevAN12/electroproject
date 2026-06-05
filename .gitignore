@@ -1,0 +1,41 @@
+# Сборка PyInstaller
+build/
+dist/
+*.spec
+.electroproject_pyi_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# Пользовательские данные и экспорт (не в репозиторий)
+*.xlsx
+*.docx
+sopt_projects/
+fire_check_projects/
+
+# Временные / отладочные артефакты
+_compare*.txt
+_ref_*.txt
+_debug_*.docx
+_compare_ours.docx
+_diag*.docx
+_tmp_*.docx
+_test_*.docx
+debug-*.log
+*.7z
+
+# IDE
+.vscode/
+.idea/
+
+# Windows
+Thumbs.db
+desktop.ini
