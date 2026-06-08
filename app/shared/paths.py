@@ -20,8 +20,10 @@ def embedded_build_tag() -> str:
     meipass = getattr(sys, "_MEIPASS", None)
     if not meipass:
         return ""
-    try:
-        return Path(meipass).joinpath("build_tag.txt").read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+    for name in ("_ep_build_tag.txt", "build_tag.txt"):
+        try:
+            return Path(meipass).joinpath(name).read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+    return ""
 
