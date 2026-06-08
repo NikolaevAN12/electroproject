@@ -7,47 +7,30 @@ set "PYCMD=python"
 %PYCMD% --version >nul 2>&1 || set "PYCMD=py"
 %PYCMD% --version >nul 2>&1 || goto :err_python
 
-if not exist "main.py" goto :err_main
+if not exist "app\main.py" goto :err_main
+if not exist "pack.py" goto :err_pack
 
-echo Checking PyInstaller...
-%PYCMD% -m PyInstaller --version >nul 2>&1
-if not errorlevel 1 (
-  echo PyInstaller is already installed. Skipping pip install.
-  goto :pip_ok
-)
-
-echo Installing PyInstaller...
+echo Installing project dependencies from requirements.txt...
 set "PIP_TRIES=0"
-:pip_retry
+:deps_retry
 set /a PIP_TRIES+=1
 echo Pip attempt %PIP_TRIES%/4...
-%PYCMD% -m pip install pyinstaller --retries 10 --timeout 60
-if not errorlevel 1 goto :pip_ok
+%PYCMD% -m pip install -r requirements.txt --retries 10 --timeout 120
+if not errorlevel 1 goto :deps_ok
 if %PIP_TRIES% geq 4 goto :err_pip
 echo Network timeout. Retrying in 5 seconds...
 timeout /t 5 /nobreak >nul
-goto :pip_retry
+goto :deps_retry
 
-:pip_ok
+:deps_ok
 
-echo Cleaning previous build...
-if exist "build" rmdir /s /q "build"
-if exist "dist\Electroproject.exe" del /f /q "dist\Electroproject.exe" 2>nul
-if exist "dist\Electroproject.exe" (
-  echo ERROR: dist\Electroproject.exe is in use. Close Electroproject and run build again.
-  pause
-  exit /b 1
-)
-if exist "dist" (
-  for %%F in ("dist\*") do del /f /q "%%F" 2>nul
-)
-if exist "Electroproject.spec" del /f /q "Electroproject.spec"
-
-echo Building EXE from main.py...
-%PYCMD% -m PyInstaller --onefile --name "Electroproject" "main.py"
+echo Building EXE via pack.py...
+%PYCMD% pack.py
 if errorlevel 1 goto :err_build
 
-echo Done: dist\Electroproject.exe
+echo.
+echo Done. Run: dist\RUN_THIS_EXE.bat
+echo      or: dist\Electroproject.exe
 pause
 exit /b 0
 
@@ -57,12 +40,17 @@ pause
 exit /b 1
 
 :err_main
-echo Error: main.py is missing in project folder.
+echo Error: app\main.py is missing in project folder.
+pause
+exit /b 1
+
+:err_pack
+echo Error: pack.py is missing in project folder.
 pause
 exit /b 1
 
 :err_pip
-echo Error: failed to install/update PyInstaller.
+echo Error: failed to install dependencies from requirements.txt.
 pause
 exit /b 1
 
