@@ -236,6 +236,10 @@ def main() -> int:
             "PIL",
             "--hidden-import",
             "PIL.Image",
+            "--hidden-import",
+            "numpy",
+            "--hidden-import",
+            "matplotlib",
             "--collect-data",
             "docx",
             str(MAIN.resolve()),
@@ -318,12 +322,16 @@ def main() -> int:
 
     latest_dist = DIST_DIR / "Electroproject_LATEST.exe"
     latest_root = ROOT / "Electroproject_LATEST.exe"
+    compat_dist = DIST_DIR / "Electroproject.exe"
+    compat_root = ROOT / "Electroproject.exe"
     try:
         _try_kill_electroproject_processes()
         _atomic_replace_exe(dist_out, latest_dist)
         _atomic_replace_exe(dist_out, latest_root)
+        _atomic_replace_exe(dist_out, compat_dist)
+        _atomic_replace_exe(dist_out, compat_root)
     except OSError as e:
-        _log(f"LATEST не обновлён: {e}")
+        _log(f"LATEST/compat exe не обновлён: {e}")
 
     stamp = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
     ver_line = f"Версия в main.py: {ver_s}\n" if ver_m else ""
@@ -336,6 +344,7 @@ def main() -> int:
             f"Запуск (надёжно): dist\\RUN_THIS_EXE.bat\n"
             f"Свежий exe: {dist_out.resolve()}\n"
             f"Копия: dist\\Electroproject_LATEST.exe\n"
+            f"Совместимость: dist\\Electroproject.exe\n"
             f"Корень (архив): {root_out.resolve()}\n",
             encoding="utf-8",
         )
@@ -346,7 +355,8 @@ def main() -> int:
         (DIST_DIR / "SOBRALO_OK.txt").write_text(
             f"OK\nЗАПУСК (свежая сборка): dist\\RUN_THIS_EXE.bat\n"
             f"Путь к exe: {dist_out.resolve()}\n"
-            f"LATEST: {latest_dist.resolve()}\n\n"
+            f"LATEST: {latest_dist.resolve()}\n"
+            f"Electroproject.exe: {compat_dist.resolve()}\n\n"
             f"Архив: {dist_out.name}\nразмер: {dist_out.stat().st_size}\n"
             f"{fp_line}"
             "Сборка только через pack.py или build_windows.bat (не pyinstaller *.spec).\n",
