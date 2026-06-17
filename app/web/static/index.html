@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Электропроект</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 24px;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #f4f6f8;
+      color: #1a2332;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      width: min(520px, 100%);
+    }
+    button {
+      padding: 14px 12px;
+      border: none;
+      border-radius: 10px;
+      background: #1f6feb;
+      color: #fff;
+      font: inherit;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) { background: #1858c7; }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    button.secondary { background: #57606a; }
+    button.secondary:hover:not(:disabled) { background: #424a53; }
+    #status {
+      min-height: 1.4em;
+      max-width: 520px;
+      text-align: center;
+      font-size: 0.92rem;
+      color: #5c6b7a;
+      white-space: pre-wrap;
+    }
+    #status.error { color: #cf222e; }
+    #status.ok { color: #1a7f37; }
+  </style>
+</head>
+<body>
+  <h1>Электропроект</h1>
+  <div class="grid">
+    <button type="button" id="btnFire">Проверка на невозгорание</button>
+    <button type="button" id="btnSopt">Расчёт СОПТ</button>
+    <button type="button" id="btnShsn">Расчёт ЩСН</button>
+    <button type="button" id="btnEquip" class="secondary">Проверка оборудования</button>
+  </div>
+  <div id="status"></div>
+
+  <input type="file" id="xlsxInput" accept=".xlsx,.xlsm" hidden>
+  <input type="file" id="cdwInput" accept=".cdw" hidden>
+
+  <script src="/static/api_client.js"></script>
+  <script>
+    const statusEl = document.getElementById("status");
+    const xlsxInput = document.getElementById("xlsxInput");
+    const cdwInput = document.getElementById("cdwInput");
+    const buttons = [
+      document.getElementById("btnFire"),
+      document.getElementById("btnSopt"),
+      document.getElementById("btnShsn"),
+      document.getElementById("btnEquip"),
+    ];
+
+    let activeModule = null;
+    let pickedXlsx = null;
+
+    function setBusy(busy) {
+      buttons.forEach((btn) => { btn.disabled = busy; });
+    }
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = kind || "";
+    }
+
+    function downloadBase64(filename, b64) {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    async function postReport(url, formData) {
+      const data = await fetchJson(url, { method: "POST", body: formData });
+      downloadBase64(data.filename, data.content_base64);
+      return data;
+    }
+
+    async function runModule(module) {
+      setBusy(true);
+      try {
+        if (module === "sopt") {
+          const fd = new FormData();
+          fd.append("xlsx_file", pickedXlsx);
+          fd.append("cdw_file", pickedCdw);
+          const data = await postReport("/api/sopt/run", fd);
+          const s = data.summary;
+          setStatus(
+            `Готово: ${data.filename}\nRкз=${s.r_kz.toFixed(3)} Ом, Rгр=${s.r_gr.toFixed(3)} Ом, N=${s.n_accepted}`,
+            "ok"
+          );
+        } else if (module === "shsn") {
+          const fd = new FormData();
+          fd.append("xlsx_file", pickedXlsx);
+          await postReport("/api/shsn/run", fd);
+          setStatus("Готово: отчёт ЩСН скачан.", "ok");
+        }
+      } catch (err) {
+        setStatus(String(err.message || err), "error");
+      } finally {
+        setBusy(false);
+        activeModule = null;
+        pickedXlsx = null;
+        pickedCdw = null;
+        xlsxInput.value = "";
+        cdwInput.value = "";
+      }
+    }
+
+    let pickedCdw = null;
+
+    xlsxInput.addEventListener("change", () => {
+      const file = xlsxInput.files[0];
+      if (!file) {
+        pickedXlsx = null;
+        setStatus("");
+        return;
+      }
+      pickedXlsx = file;
+      if (activeModule === "sopt") {
+        setStatus("Выберите чертёж КОМПАС (.cdw)…");
+        cdwInput.click();
+        return;
+      }
+      runModule(activeModule);
+    });
+
+    cdwInput.addEventListener("change", () => {
+      const file = cdwInput.files[0];
+      if (!file) {
+        pickedCdw = null;
+        if (activeModule === "sopt") {
+          pickedXlsx = null;
+          xlsxInput.value = "";
+        }
+        setStatus("");
+        return;
+      }
+      pickedCdw = file;
+      if (activeModule === "sopt") runModule("sopt");
+    });
+
+    function startExcelPick(module, prompt) {
+      activeModule = module;
+      setStatus(prompt);
+      xlsxInput.click();
+    }
+
+    document.getElementById("btnFire").addEventListener("click", () => {
+      window.location.href = "/fire";
+    });
+    document.getElementById("btnSopt").addEventListener("click", () => {
+      startExcelPick("sopt", "Выберите Excel для расчёта СОПТ…");
+    });
+    document.getElementById("btnShsn").addEventListener("click", () => {
+      startExcelPick("shsn", "Выберите Excel модели сети ЩСН…");
+    });
+    document.getElementById("btnEquip").addEventListener("click", () => {
+      setStatus("Проверка оборудования будет доступна в следующих версиях.", "error");
+    });
+  </script>
+</body>
+</html>

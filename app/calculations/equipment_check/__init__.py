@@ -1,0 +1,2 @@
+"""Equipment check placeholder module."""
+
