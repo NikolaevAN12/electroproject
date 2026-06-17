@@ -7,11 +7,17 @@ EQUIPMENT_TYPES: tuple[tuple[str, str], ...] = (
     ("fuse", "Предохранитель"),
     ("breaker", "Автоматический выключатель"),
     ("cable", "Кабель"),
-    ("kz_point", "Точка КЗ"),
 )
 
+# Внутренний тип; в Excel задаётся флагом «Точка КЗ» в строке оборудования.
+KZ_POINT_ITEM_TYPE = "kz_point"
+KZ_POINT_LABEL = "Точка КЗ"
+
 EQUIPMENT_LABEL_BY_KEY: dict[str, str] = dict(EQUIPMENT_TYPES)
-EQUIPMENT_KEY_BY_LABEL: dict[str, str] = {label: key for key, label in EQUIPMENT_TYPES}
+EQUIPMENT_KEY_BY_LABEL: dict[str, str] = {
+    **{label: key for key, label in EQUIPMENT_TYPES},
+    KZ_POINT_LABEL: KZ_POINT_ITEM_TYPE,
+}
 
 BREAKER_CURVE_CHOICES: tuple[str, ...] = ("B", "C", "D", "K", "Z")
 BREAKER_CURVE_LABELS: dict[str, str] = {key: key for key in BREAKER_CURVE_CHOICES}
@@ -31,7 +37,7 @@ class SoptEquipmentItem:
     cb_curve: str = ""
     cb_multiplier: float = 0.0
     cb_trip_time_s: float = 0.0
-    # Точка КЗ участвует в проверке селективности (раздел 4 Word); на расчёт §3 не влияет.
+    # Точка КЗ участвует в проверке селективности (раздел 6 Word); на расчёт §3 не влияет.
     include_in_selectivity: bool = False
 
 

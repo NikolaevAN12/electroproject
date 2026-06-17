@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проверка на невозгорание — Электропроект</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 24px;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #f4f6f8;
+      color: #1a2332;
+    }
+    h1 {
+      margin: 0 0 4px;
+      font-size: 1.5rem;
+      font-weight: 600;
+      text-align: center;
+    }
+    .subtitle {
+      margin: 0 0 12px;
+      font-size: 0.95rem;
+      color: #5c6b7a;
+      text-align: center;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      width: min(520px, 100%);
+    }
+    .grid-full {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      width: min(520px, 100%);
+    }
+    button {
+      padding: 14px 12px;
+      border: none;
+      border-radius: 10px;
+      background: #1f6feb;
+      color: #fff;
+      font: inherit;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) { background: #1858c7; }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    button.secondary { background: #57606a; }
+    button.secondary:hover:not(:disabled) { background: #424a53; }
+    #status {
+      min-height: 1.4em;
+      max-width: 520px;
+      text-align: center;
+      font-size: 0.92rem;
+      color: #5c6b7a;
+      white-space: pre-wrap;
+    }
+    #status.error { color: #cf222e; }
+    #status.ok { color: #1a7f37; }
+  </style>
+</head>
+<body>
+  <h1>Проверка на невозгорание</h1>
+  <p class="subtitle">Выберите класс напряжения кабельной линии</p>
+  <div class="grid">
+    <button type="button" id="btnUpTo1kv">До 1 кВ</button>
+    <button type="button" id="btnAbove1kv">Свыше 1 кВ</button>
+  </div>
+  <div class="grid-full">
+    <button type="button" id="btnTemplate" class="secondary">Создать шаблон (свыше 1 кВ)</button>
+  </div>
+  <button type="button" id="btnBack" class="secondary">На главную</button>
+  <div id="status"></div>
+
+  <input type="file" id="xlsxInput" accept=".xlsx,.xlsm" hidden>
+
+  <script src="/static/api_client.js"></script>
+  <script>
+    const statusEl = document.getElementById("status");
+    const xlsxInput = document.getElementById("xlsxInput");
+    const buttons = [
+      document.getElementById("btnUpTo1kv"),
+      document.getElementById("btnAbove1kv"),
+      document.getElementById("btnTemplate"),
+      document.getElementById("btnBack"),
+    ];
+
+    let voltageClass = null;
+
+    function setBusy(busy) {
+      buttons.forEach((btn) => { btn.disabled = busy; });
+    }
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = kind || "";
+    }
+
+    function downloadBase64(filename, b64, mime) {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    async function downloadMvCableTemplate() {
+      setBusy(true);
+      setStatus("Формирование шаблона Excel…");
+      try {
+        const data = await fetchJson("/api/fire_check/mv_cable/template");
+        downloadBase64(
+          data.filename,
+          data.content_base64,
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        setStatus("Шаблон Excel скачан.", "ok");
+      } catch (err) {
+        setStatus(String(err.message || err), "error");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function runFireCheck(file) {
+      setBusy(true);
+      const label = voltageClass === "above_1kv" ? "свыше 1 кВ" : "до 1 кВ";
+      setStatus(`${label}: формирование отчёта…`);
+      try {
+        const fd = new FormData();
+        if (file) fd.append("xlsx_file", file);
+        fd.append("voltage_class", voltageClass);
+        const data = await fetchJson("/api/fire_check/run", { method: "POST", body: fd });
+        downloadBase64(
+          data.filename,
+          data.content_base64,
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        setStatus(`Готово (${label}): отчёт скачан.`, "ok");
+      } catch (err) {
+        setStatus(String(err.message || err), "error");
+      } finally {
+        setBusy(false);
+        voltageClass = null;
+        xlsxInput.value = "";
+      }
+    }
+
+    xlsxInput.addEventListener("change", () => {
+      const file = xlsxInput.files[0];
+      if (!file || !voltageClass) {
+        setStatus("");
+        return;
+      }
+      runFireCheck(file);
+    });
+
+    function startExcelPick(className, prompt) {
+      voltageClass = className;
+      setStatus(prompt);
+      xlsxInput.click();
+    }
+
+    document.getElementById("btnUpTo1kv").addEventListener("click", () => {
+      startExcelPick("up_to_1kv", "До 1 кВ: выберите Excel…");
+    });
+    document.getElementById("btnAbove1kv").addEventListener("click", () => {
+      startExcelPick("above_1kv", "Свыше 1 кВ: выберите Excel…");
+    });
+    document.getElementById("btnTemplate").addEventListener("click", () => {
+      downloadMvCableTemplate();
+    });
+    document.getElementById("btnBack").addEventListener("click", () => {
+      window.location.href = "/";
+    });
+  </script>
+</body>
+</html>

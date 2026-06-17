@@ -186,11 +186,12 @@ class FireCheckCalculator:
 
             return None
 
-        x = 19.58 * bk / (section_mm2 * section_mm2)
+        kappa = 19.58 * bk / (section_mm2 * section_mm2)
 
         try:
 
-            result = float(t_wire) * math.exp(x) + 228.0 * math.exp(x - 1.0)
+            exp_k = math.exp(kappa)
+            result = float(t_wire) * exp_k + 228.0 * (exp_k - 1.0)
 
         except OverflowError:
 

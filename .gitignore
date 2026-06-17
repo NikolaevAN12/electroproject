@@ -36,6 +36,10 @@ debug-*.log
 .vscode/
 .idea/
 
+# Локальные инструменты (Portable Git и т.п.)
+.tools/
+.github_token
+
 # Windows
 Thumbs.db
 desktop.ini

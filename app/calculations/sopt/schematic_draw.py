@@ -13,6 +13,52 @@ if TYPE_CHECKING:
 from .models import EQUIPMENT_LABEL_BY_KEY, SoptEquipmentItem
 from .resistance import item_resistance_ohm
 
+_FIG_STANDARD_W = 560
+_FIG_STANDARD_H = 300
+
+
+def _trim_white_borders(img: "Image.Image", *, margin: int = 0) -> "Image.Image":
+    px = img.load()
+    w, h = img.size
+    min_x, min_y, max_x, max_y = w, h, -1, -1
+    for y in range(h):
+        for x in range(w):
+            if px[x, y] != (255, 255, 255):
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+    if max_x < 0:
+        return img
+    min_x = max(0, min_x - margin)
+    min_y = max(0, min_y - margin)
+    max_x = min(w - 1, max_x + margin)
+    max_y = min(h - 1, max_y + margin)
+    return img.crop((min_x, min_y, max_x + 1, max_y + 1))
+
+
+def _fit_image_to_standard_canvas(
+    img: "Image.Image",
+    *,
+    width: int = _FIG_STANDARD_W,
+    height: int = _FIG_STANDARD_H,
+    margin: int = 10,
+) -> "Image.Image":
+    from PIL import Image
+
+    trimmed = _trim_white_borders(img)
+    inner_w = max(1, width - 2 * margin)
+    inner_h = max(1, height - 2 * margin)
+    src_w, src_h = trimmed.size
+    scale = min(inner_w / src_w, inner_h / src_h)
+    dst_w = max(1, int(src_w * scale))
+    dst_h = max(1, int(src_h * scale))
+    if (dst_w, dst_h) != trimmed.size:
+        trimmed = trimmed.resize((dst_w, dst_h), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", (width, height), "white")
+    canvas.paste(trimmed, ((width - dst_w) // 2, (height - dst_h) // 2))
+    return canvas
+
 
 def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     from PIL import ImageFont
@@ -93,28 +139,35 @@ def _label_text(item: SoptEquipmentItem) -> str:
 def render_akb_input_schematic() -> "Image.Image":
     from PIL import Image, ImageDraw
 
-    img = Image.new("RGB", (580, 240), "white")
+    pad_left = 52
+    pad_top = 40
+    img = Image.new("RGB", (560 + pad_left, 300 + pad_top), "white")
     draw = ImageDraw.Draw(img)
     line_color = "black"
     wire_w = 2
-    box_w = 58
-    box_h = 22
-    font_fu = _load_font(24, bold=False)
+    box_w = 44
+    box_h = 20
+    left_res_w = box_h
+    left_res_h = box_w
+    font_fu = _load_font(22, bold=False)
     font_polarity = _load_font(26, bold=True)
-    font_res = _load_font(18, bold=False)
+    font_left_r = _load_font(24, bold=False)
+    font_left = _load_font(22, bold=False)
+    font_left_sub = _load_font(14, bold=False)
 
-    x_left = 70
-    x_right = 530
-    y_top = 60
-    y_bottom = 188
+    x_left = 92 + pad_left
+    x_right = 452 + pad_left
+    y_top = 78 + pad_top
+    y_bottom = 228 + pad_top
     y_mid = (y_top + y_bottom) // 2
 
-    # Верхняя и нижняя шины с предохранителями.
-    fu1_left = 250
-    fu2_left = 250
+    # Верхняя и нижняя шины с предохранителями (координаты как на рис.2).
+    fu1_left = 228 + pad_left
+    fu2_left = fu1_left
+    fu_cx = fu1_left + box_w // 2
     draw.line([(x_left, y_top), (fu1_left, y_top)], fill=line_color, width=wire_w)
     draw.rectangle([fu1_left, y_top - box_h // 2, fu1_left + box_w, y_top + box_h // 2], outline=line_color, width=2)
-    draw.line([(fu1_left + box_w, y_top), (x_right - 18, y_top)], fill=line_color, width=wire_w)
+    draw.line([(fu1_left + box_w, y_top), (x_right, y_top)], fill=line_color, width=wire_w)
 
     draw.line([(x_left, y_bottom), (fu2_left, y_bottom)], fill=line_color, width=wire_w)
     draw.rectangle(
@@ -122,37 +175,49 @@ def render_akb_input_schematic() -> "Image.Image":
         outline=line_color,
         width=2,
     )
-    draw.line([(fu2_left + box_w, y_bottom), (x_right - 18, y_bottom)], fill=line_color, width=wire_w)
+    draw.line([(fu2_left + box_w, y_bottom), (x_right, y_bottom)], fill=line_color, width=wire_w)
 
     # Вертикальная левая ветвь.
     draw.line([(x_left, y_top), (x_left, y_bottom)], fill=line_color, width=wire_w)
 
-    # Символ АКБ на левой ветви.
-    plate_x1 = x_left - 19
-    plate_x2 = x_left + 7
-    draw.line([(plate_x1, y_mid - 18), (plate_x2, y_mid - 18)], fill=line_color, width=2)
-    draw.line([(plate_x1 - 5, y_mid - 8), (plate_x2 + 5, y_mid - 8)], fill=line_color, width=2)
-    draw.line([(plate_x1, y_mid + 2), (plate_x2, y_mid + 2)], fill=line_color, width=2)
+    # Левый вертикальный резистор Rаб+Rпер (как на рис.2–3, без числовых значений).
+    left_rect_top = y_mid - left_res_h // 2
+    draw.rectangle(
+        [x_left - left_res_w // 2, left_rect_top, x_left + left_res_w // 2, left_rect_top + left_res_h],
+        outline=line_color,
+        width=2,
+        fill="white",
+    )
 
     # Клеммы +/- справа.
-    draw.line([(x_right - 18, y_top - 10), (x_right - 18, y_top + 10)], fill=line_color, width=2)
-    draw.line([(x_right - 18, y_bottom - 10), (x_right - 18, y_bottom + 10)], fill=line_color, width=2)
-    draw.text((x_right - 6, y_top - 18), "+", fill=line_color, font=font_polarity)
-    draw.text((x_right - 7, y_bottom - 18), "-", fill=line_color, font=font_polarity)
+    draw.line([(x_right, y_top - 10), (x_right, y_top + 10)], fill=line_color, width=2)
+    draw.line([(x_right, y_bottom - 10), (x_right, y_bottom + 10)], fill=line_color, width=2)
+    draw.text((x_right + 12, y_top - 18), "+", fill=line_color, font=font_polarity)
+    draw.text((x_right + 11, y_bottom - 18), "-", fill=line_color, font=font_polarity)
 
-    # Подписи FU1/FU2.
-    draw.text((fu1_left + 6, y_top - 38), "FU 1", fill=line_color, font=font_fu)
-    draw.text((fu2_left + 6, y_bottom - 38), "FU 2", fill=line_color, font=font_fu)
+    # Подписи FU1 / FU2 — слитно, по центру над прямоугольниками.
+    fu_gap = 10
+    for label, y_line in (("FU1", y_top), ("FU2", y_bottom)):
+        fu_bbox = draw.textbbox((0, 0), label, font=font_fu)
+        fu_tw = fu_bbox[2] - fu_bbox[0]
+        fu_th = fu_bbox[3] - fu_bbox[1]
+        draw.text(
+            (fu_cx - fu_tw // 2, y_line - box_h // 2 - fu_gap - fu_th),
+            label,
+            fill=line_color,
+            font=font_fu,
+        )
 
-    # Вертикальная надпись Rаб + Rпер.
-    text = "Rаб+Rпер"
-    txt_layer = Image.new("RGBA", (210, 42), (255, 255, 255, 0))
-    txt_draw = ImageDraw.Draw(txt_layer)
-    txt_draw.text((0, 0), text, fill=(0, 0, 0, 255), font=font_res)
-    txt_rot = txt_layer.rotate(90, expand=True)
-    img.paste(txt_rot, (28, y_mid - txt_rot.height // 2), txt_rot)
+    _draw_fig1_left_res_label_pil(
+        img,
+        x_left - 46,
+        y_mid,
+        font_r=font_left_r,
+        font_sub=font_left_sub,
+        font_main=font_left,
+    )
 
-    return img
+    return _fit_image_to_standard_canvas(img)
 
 
 def akb_input_schematic_png_bytes() -> io.BytesIO:
@@ -173,7 +238,7 @@ def _fmt_ohm4(value: float) -> str:
     return f"{value:.4f}".replace(".", ",")
 
 
-def _draw_rpr_caption_pil(
+def _draw_r_subscript_label_pil(
     draw: "ImageDraw.ImageDraw",
     cx: int,
     y: int,
@@ -182,7 +247,7 @@ def _draw_rpr_caption_pil(
     color: str,
     font_r: "ImageFont.FreeTypeFont | ImageFont.ImageFont",
     font_sub: "ImageFont.FreeTypeFont | ImageFont.ImageFont",
-) -> None:
+) -> int:
     r_box = draw.textbbox((0, 0), "R", font=font_r)
     r_w = r_box[2] - r_box[0]
     r_h = r_box[3] - r_box[1]
@@ -193,6 +258,22 @@ def _draw_rpr_caption_pil(
     x0 = cx - total_w // 2
     draw.text((x0, y), "R", fill=color, font=font_r)
     draw.text((x0 + r_w + 2, y + r_h // 2 - sub_h // 2 + 3), suffix, fill=color, font=font_sub)
+    return total_w
+
+
+def _draw_rpr_caption_pil(
+    draw: "ImageDraw.ImageDraw",
+    cx: int,
+    y: int,
+    suffix: str,
+    *,
+    color: str,
+    font_r: "ImageFont.FreeTypeFont | ImageFont.ImageFont",
+    font_sub: "ImageFont.FreeTypeFont | ImageFont.ImageFont",
+) -> None:
+    _draw_r_subscript_label_pil(
+        draw, cx, y, suffix, color=color, font_r=font_r, font_sub=font_sub
+    )
 
 
 def _draw_left_res_label_pil(
@@ -209,7 +290,7 @@ def _draw_left_res_label_pil(
 ) -> None:
     from PIL import Image, ImageDraw
 
-    line2_txt = value_line if value_line is not None else "(0,0867+0,0024) Ом"
+    show_value = value_line is not None and value_line != ""
 
     tmp = Image.new("RGBA", (1, 1), (255, 255, 255, 0))
     td = ImageDraw.Draw(tmp)
@@ -217,7 +298,7 @@ def _draw_left_res_label_pil(
     sub_ab_box = td.textbbox((0, 0), "АБ", font=font_sub)
     plus_box = td.textbbox((0, 0), "+", font=font_main)
     sub_per_box = td.textbbox((0, 0), "ПЕР", font=font_sub)
-    line2_box = td.textbbox((0, 0), line2_txt, font=font_main)
+    line2_box = td.textbbox((0, 0), value_line or "", font=font_main) if show_value else (0, 0, 0, 0)
 
     r_w = r_box[2] - r_box[0]
     r_h = r_box[3] - r_box[1]
@@ -232,9 +313,12 @@ def _draw_left_res_label_pil(
 
     line1_w = r_w + 2 + sub_ab_w + 8 + plus_w + 8 + r_w + 2 + sub_per_w
     line1_h = max(r_h, plus_h, sub_ab_h + 12, sub_per_h + 12)
-    gap = 4
-    block_w = max(line1_w, line2_w) + 8
-    block_h = line1_h + gap + line2_h + 6
+    sep_above = 4
+    sep_below = 4
+    sep_pad = 4
+    value_block_h = (sep_above + 1 + sep_below + line2_h + 6) if show_value else 0
+    block_w = (max(line1_w, line2_w) if show_value else line1_w) + 8
+    block_h = line1_h + value_block_h
 
     block = Image.new("RGBA", (block_w, block_h), (255, 255, 255, 0))
     bd = ImageDraw.Draw(block)
@@ -251,25 +335,109 @@ def _draw_left_res_label_pil(
     x0 += r_w + 2
     bd.text((x0, y0 + 12), "ПЕР", fill=(0, 0, 0, 255), font=font_sub)
 
-    line2_x = (block_w - line2_w) // 2
-    line2_y = line1_h + gap
-    bd.text((line2_x, line2_y), line2_txt, fill=(0, 0, 0, 255), font=font_main)
+    if show_value:
+        sep_w = max(line1_w, line2_w) + sep_pad * 2
+        sep_x0 = (block_w - sep_w) // 2
+        sep_y = line1_h + sep_above
+        bd.line([(sep_x0, sep_y), (sep_x0 + sep_w, sep_y)], fill=(0, 0, 0, 255), width=1)
+        line2_x = (block_w - line2_w) // 2
+        line2_y = sep_y + 1 + sep_below
+        bd.text((line2_x, line2_y), value_line or "", fill=(0, 0, 0, 255), font=font_main)
 
     bb = block.getbbox()
     if bb is not None:
         block = block.crop(bb)
     rot = block.rotate(90, expand=True)
-    img.paste(rot, (x - rot.width // 2, y - rot.height // 2), rot)
+    paste_x = max(2, min(img.width - rot.width - 2, x - rot.width // 2))
+    paste_y = max(2, min(img.height - rot.height - 2, y - rot.height // 2))
+    img.paste(rot, (paste_x, paste_y), rot)
 
 
-def render_k1_substitution_schematic(r_ab_ohm: float, r_per_ohm: float, r_pr_ohm: float) -> "Image.Image":
-    return _render_k1_substitution_schematic_pil(r_ab_ohm, r_per_ohm, r_pr_ohm)
-
-
-def _render_k1_substitution_schematic_pil(r_ab_ohm: float, r_per_ohm: float, r_pr_ohm: float) -> "Image.Image":
+def _draw_fig1_left_res_label_pil(
+    img: "Image.Image",
+    x: int,
+    y: int,
+    *,
+    font_r: "ImageFont.FreeTypeFont | ImageFont.ImageFont",
+    font_sub: "ImageFont.FreeTypeFont | ImageFont.ImageFont",
+    font_main: "ImageFont.FreeTypeFont | ImageFont.ImageFont",
+) -> None:
+    """Вертикальная подпись Rаб+Rпер только для рис.1 (без числовых значений)."""
     from PIL import Image, ImageDraw
 
-    img = Image.new("RGB", (560, 300), "white")
+    tmp = Image.new("RGBA", (1, 1), (255, 255, 255, 0))
+    td = ImageDraw.Draw(tmp)
+    r_box = td.textbbox((0, 0), "R", font=font_r)
+    sub_ab_box = td.textbbox((0, 0), "АБ", font=font_sub)
+    plus_box = td.textbbox((0, 0), "+", font=font_main)
+    sub_per_box = td.textbbox((0, 0), "ПЕР", font=font_sub)
+
+    r_w = r_box[2] - r_box[0]
+    r_h = r_box[3] - r_box[1]
+    sub_ab_w = sub_ab_box[2] - sub_ab_box[0]
+    sub_ab_h = sub_ab_box[3] - sub_ab_box[1]
+    plus_w = plus_box[2] - plus_box[0]
+    plus_h = plus_box[3] - plus_box[1]
+    sub_per_w = sub_per_box[2] - sub_per_box[0]
+    sub_per_h = sub_per_box[3] - sub_per_box[1]
+
+    line1_w = r_w + 2 + sub_ab_w + 8 + plus_w + 8 + r_w + 2 + sub_per_w
+    line1_h = max(r_h, plus_h, sub_ab_h + 12, sub_per_h + 12)
+    ink_pad = 8
+    block_w = line1_w + ink_pad * 2
+    block_h = line1_h + ink_pad * 2
+
+    block = Image.new("RGBA", (block_w, block_h), (255, 255, 255, 0))
+    bd = ImageDraw.Draw(block)
+    x0 = (block_w - line1_w) // 2
+    y0 = ink_pad
+    bd.text((x0, y0), "R", fill=(0, 0, 0, 255), font=font_r)
+    x0 += r_w + 2
+    bd.text((x0, y0 + 12), "АБ", fill=(0, 0, 0, 255), font=font_sub)
+    x0 += sub_ab_w + 8
+    bd.text((x0, y0), "+", fill=(0, 0, 0, 255), font=font_main)
+    x0 += plus_w + 8
+    bd.text((x0, y0), "R", fill=(0, 0, 0, 255), font=font_r)
+    x0 += r_w + 2
+    bd.text((x0, y0 + 12), "ПЕР", fill=(0, 0, 0, 255), font=font_sub)
+
+    bb = block.getbbox()
+    if bb is not None:
+        block = block.crop(bb)
+    edge_pad = 10
+    padded = Image.new(
+        "RGBA",
+        (block.width + edge_pad * 2, block.height + edge_pad * 2),
+        (255, 255, 255, 0),
+    )
+    padded.paste(block, (edge_pad, edge_pad), block)
+    rot = padded.rotate(90, expand=True)
+    margin = 4
+    paste_x = max(margin, min(img.width - rot.width - margin, x - rot.width // 2))
+    paste_y = max(margin, min(img.height - rot.height - margin, y - rot.height // 2))
+    img.paste(rot, (paste_x, paste_y), rot)
+
+
+def render_k1_substitution_schematic(
+    r_ab_ohm: float,
+    r_per_ohm: float,
+    r_pr_ohm: float,
+    *,
+    kz_point_label: str = "K1-1(2)",
+) -> "Image.Image":
+    return _render_k1_substitution_schematic_pil(r_ab_ohm, r_per_ohm, r_pr_ohm, kz_point_label=kz_point_label)
+
+
+def _render_k1_substitution_schematic_pil(
+    r_ab_ohm: float,
+    r_per_ohm: float,
+    r_pr_ohm: float,
+    *,
+    kz_point_label: str,
+) -> "Image.Image":
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (_FIG_STANDARD_W, _FIG_STANDARD_H), "white")
     draw = ImageDraw.Draw(img)
     line_color = "black"
     wire_w = 2
@@ -281,7 +449,7 @@ def _render_k1_substitution_schematic_pil(r_ab_ohm: float, r_per_ohm: float, r_p
     font_value = _load_font(22, bold=False)
     font_left = _load_font(20, bold=False)
     font_left_sub = _load_font(12, bold=False)
-    font_k1 = _load_font(22, bold=False)
+    font_kz = _load_font(16 if len(kz_point_label) > 2 else 22, bold=False)
 
     x_left = 92
     x_right = 452
@@ -365,7 +533,7 @@ def _render_k1_substitution_schematic_pil(r_ab_ohm: float, r_per_ohm: float, r_p
         value_line=f"({_fmt_ohm4(r_ab_ohm)}+{_fmt_ohm4(r_per_ohm)}) Ом",
     )
 
-    draw.text((x_right + 24, y_mid - 36), "K1", fill=line_color, font=font_k1)
+    draw.text((x_right + 24, y_mid - 36), kz_point_label, fill=line_color, font=font_kz)
     icon = _load_lightning_icon()
     if icon is not None:
         target_h = 26
@@ -386,8 +554,14 @@ def _render_k1_substitution_schematic_pil(r_ab_ohm: float, r_per_ohm: float, r_p
     return img
 
 
-def k1_substitution_schematic_png_bytes(r_ab_ohm: float, r_per_ohm: float, r_pr_ohm: float) -> io.BytesIO:
-    img = render_k1_substitution_schematic(r_ab_ohm, r_per_ohm, r_pr_ohm)
+def k1_substitution_schematic_png_bytes(
+    r_ab_ohm: float,
+    r_per_ohm: float,
+    r_pr_ohm: float,
+    *,
+    kz_point_label: str = "K1-1(2)",
+) -> io.BytesIO:
+    img = render_k1_substitution_schematic(r_ab_ohm, r_per_ohm, r_pr_ohm, kz_point_label=kz_point_label)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
@@ -431,9 +605,11 @@ def render_subsection_kz_schematic(items: list[SoptEquipmentItem], r_ab_ohm: flo
     line_color = "black"
     wire_w = 2
 
-    font_lbl = _load_font(16, bold=False)
+    font_r_lbl = _load_font(16, bold=False)
+    font_r_sub = _load_font(11, bold=False)
     font_val = _load_font(13, bold=False)
     font_kz = _load_font(16, bold=False)
+    font_left_r = _load_font(22, bold=False)
     font_left = _load_font(20, bold=False)
     font_left_sub = _load_font(12, bold=False)
 
@@ -457,9 +633,10 @@ def render_subsection_kz_schematic(items: list[SoptEquipmentItem], r_ab_ohm: flo
         x_left - 56,
         y_mid,
         color=line_color,
-        font_r=font_left,
+        font_r=font_left_r,
         font_sub=font_left_sub,
         font_main=font_left,
+        value_line=f"({_fmt_ohm4(r_ab_ohm)}+{_fmt_ohm4(r_per_ohm)}) Ом",
     )
 
     for idx, item in enumerate(components):
@@ -468,16 +645,29 @@ def render_subsection_kz_schematic(items: list[SoptEquipmentItem], r_ab_ohm: flo
         draw.rectangle([cx - box_w // 2, y_bottom - box_h // 2, cx + box_w // 2, y_bottom + box_h // 2], outline=line_color, width=2, fill="white")
         dsg = item.designation.strip() or f"X{idx + 1}"
         r_text = f"{_fmt_ohm(item_resistance_ohm(item))} Ом"
-        top_title = f"R{dsg}"
-        bbox = draw.textbbox((0, 0), top_title, font=font_lbl)
-        tw = bbox[2] - bbox[0]
-        draw.text((cx - tw // 2, y_top - 56), top_title, fill=line_color, font=font_lbl)
+        tw = _draw_r_subscript_label_pil(
+            draw,
+            cx,
+            y_top - 56,
+            dsg,
+            color=line_color,
+            font_r=font_r_lbl,
+            font_sub=font_r_sub,
+        )
         draw.line([(cx - tw // 2 - 2, y_top - 36), (cx + tw // 2 + 2, y_top - 36)], fill=line_color, width=1)
         vb = draw.textbbox((0, 0), r_text, font=font_val)
         vw = vb[2] - vb[0]
         draw.text((cx - vw // 2, y_top - 32), r_text, fill=line_color, font=font_val)
 
-        draw.text((cx - tw // 2, y_bottom - 56), top_title, fill=line_color, font=font_lbl)
+        tw = _draw_r_subscript_label_pil(
+            draw,
+            cx,
+            y_bottom - 56,
+            dsg,
+            color=line_color,
+            font_r=font_r_lbl,
+            font_sub=font_r_sub,
+        )
         draw.line([(cx - tw // 2 - 2, y_bottom - 36), (cx + tw // 2 + 2, y_bottom - 36)], fill=line_color, width=1)
         draw.text((cx - vw // 2, y_bottom - 32), r_text, fill=line_color, font=font_val)
 
@@ -493,7 +683,16 @@ def render_subsection_kz_schematic(items: list[SoptEquipmentItem], r_ab_ohm: flo
             bolt = icon.resize((iw, ih))
             img.paste(bolt, (xkz + 5, y_mid - 10), bolt)
         else:
-            draw.line([(xkz + 18, y_mid - 8), (xkz + 6, y_mid + 2), (xkz + 14, y_mid + 2), (xkz + 1, y_mid + 8)], fill="#7a7a7a", width=1)
+            draw.line(
+                [
+                    (xkz + 18, y_mid - 8),
+                    (xkz + 6, y_mid + 2),
+                    (xkz + 14, y_mid + 2),
+                    (xkz + 1, y_mid + 8),
+                ],
+                fill="#7a7a7a",
+                width=1,
+            )
 
     return img
 

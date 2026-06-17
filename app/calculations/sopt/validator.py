@@ -25,26 +25,31 @@ class SoptValidator:
                 )
             )
         if input_model.r_el <= 0:
-            errors.append(ValidationError(field="r_el", message="АКБ: Rэл должно быть больше 0."))
+            errors.append(
+                ValidationError(
+                    field="r_el",
+                    message="АКБ: Внутреннее сопротивление блока Rэл, Ом должно быть больше 0.",
+                )
+            )
         if input_model.rho <= 0:
             errors.append(
                 ValidationError(
                     field="rho",
-                    message="АКБ: ρ (удельное сопротивление) должно быть больше 0.",
+                    message="АКБ: Удельное сопротивление перемычки ρ должно быть больше 0.",
                 )
             )
         if input_model.jumper_section <= 0:
             errors.append(
                 ValidationError(
                     field="jumper_section",
-                    message="АКБ: S (сечение перемычки) должно быть больше 0.",
+                    message="АКБ: Сечение перемычки S, мм² должно быть больше 0.",
                 )
             )
         if input_model.input_fuse_resistance <= 0:
             errors.append(
                 ValidationError(
                     field="input_fuse_resistance",
-                    message="Введите сопротивление вводного предохранителя (Rпр) больше 0.",
+                    message="Вводный предохранитель: Rпр, Ом должно быть больше 0.",
                 )
             )
         if input_model.qn1_ah <= 0:

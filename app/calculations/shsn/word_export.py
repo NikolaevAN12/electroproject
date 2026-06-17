@@ -7,8 +7,7 @@ from typing import Any
 
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Inches, RGBColor
 
 from .calculator import _Calculator
 from .diagrams import create_replacement_diagram, create_selectivity_map
@@ -22,42 +21,6 @@ from .models import (
     ShsnResult,
 )
 from .network import NetworkGraph
-
-_REPORT_FONT = "Times New Roman"
-_REPORT_FONT_SIZE_PT = 14
-
-
-def _set_run_font(run: Any, *, size_pt: int = _REPORT_FONT_SIZE_PT) -> None:
-    run.font.name = _REPORT_FONT
-    run.font.size = Pt(size_pt)
-    r_pr = run._element.get_or_add_rPr()
-    r_fonts = r_pr.get_or_add_rFonts()
-    for tag in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
-        r_fonts.set(qn(tag), _REPORT_FONT)
-
-
-def _apply_paragraph_font(paragraph: Any) -> None:
-    for run in paragraph.runs:
-        _set_run_font(run)
-
-
-def _apply_report_font(doc: Any) -> None:
-    for name in ("Normal", "List Bullet", *(f"Heading {i}" for i in range(10))):
-        try:
-            style = doc.styles[name]
-        except KeyError:
-            continue
-        style.font.name = _REPORT_FONT
-        style.font.size = Pt(_REPORT_FONT_SIZE_PT)
-
-    for paragraph in doc.paragraphs:
-        _apply_paragraph_font(paragraph)
-
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    _apply_paragraph_font(paragraph)
 
 
 def populate_shsn_document(doc: Any, input_model: ShsnInput, result_model: ShsnResult) -> None:
@@ -160,7 +123,6 @@ class _EnhancedReportGenerator:
         self.doc.add_page_break()
         self._add_black_heading("Раздел 6: Карты селективности АВ", level=1)
         self._write_selectivity_maps()
-        _apply_report_font(self.doc)
 
     def _write_calculation_steps(self, res: ScPointResult) -> None:
         def get_sqrt3():

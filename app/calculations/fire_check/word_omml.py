@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import xml.sax.saxutils as xml_esc
 from typing import Any, Literal
 
@@ -18,39 +19,47 @@ from docx.shared import Cm, Pt
 MNS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 WNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
-# Как в Raschet_SN.docx: Cambria Math 12 pt (sz 24) внутри m:r
+# Как в Raschet_SN.docx: Cambria Math 12 pt (sz 24) внутри m:r, без жирного и курсива.
 _MATH_W_RPR = (
     f'<w:rPr xmlns:w="{WNS}">'
     f'<w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math" w:cs="Arial"/>'
+    f'<w:b w:val="0"/>'
+    f'<w:i w:val="0"/>'
     f'<w:sz w:val="24"/><w:szCs w:val="24"/>'
     f"</w:rPr>"
 )
+
+# Знак умножения в формулах Word — как в отчёте СОПТ (_xml_mrun('·')).
+MUL_SIGN = "\u00b7"
+
+
+def normalize_mul_sign(text: str) -> str:
+    return (
+        text.replace("*", MUL_SIGN)
+        .replace("\u2022", MUL_SIGN)
+        .replace("\u2219", MUL_SIGN)
+    )
 
 
 def _xe(s: str) -> str:
     return xml_esc.escape(s)
 
 
+_MATH_MINUS = "\u2212"
+
+
 def _math_plain_text(s: str) -> str:
-    """Cambria Math плохо рисует ℃ (U+2103) и длинное тире в m:t — даёт «?» и пустые квадраты."""
-    return (
+    """Тире → математический минус U+2212; «e-(» не трогаем."""
+    s = (
         s.replace("\u2103", "\u00B0C")
         .replace("℃", "\u00B0C")
-        .replace("\u2014", "-")
-        .replace("\u2013", "-")
+        .replace("\u2014", _MATH_MINUS)
+        .replace("\u2013", _MATH_MINUS)
     )
-
-
-def _omml_text_needs_nor(s: str) -> bool:
-    """Cambria Math: кириллица, греческие Θ/θ, цифры и «,» — через m:nor (иначе пустые квадраты в Word)."""
-    for c in s:
-        if "\u0370" <= c <= "\u04ff":
-            return True
-        if c in ",.;·−":
-            return True
-        if c.isdigit():
-            return True
-    return False
+    s = re.sub(r"(?<![eе]) - ", f" {_MATH_MINUS} ", s)
+    s = s.replace(f"{_MATH_MINUS}{MUL_SIGN}", MUL_SIGN)
+    s = s.replace(f"-{MUL_SIGN}", MUL_SIGN)
+    return s
 
 
 def _wrap_omath(inner: str, *, math_para_center: bool = False) -> str:
@@ -175,11 +184,523 @@ def xml_mrun(text: str) -> str:
     if text is None:
         text = ""
     safe = _math_plain_text(str(text))
-    if safe.strip() == "":
+    # Пробелы между токенами формулы сохраняем; «-» только для пустого m:r.
+    if safe == "":
         safe = "-"
     t = _xe(safe)
-    m_rpr = "<m:rPr><m:nor/></m:rPr>" if _omml_text_needs_nor(safe) else ""
-    return f"<m:r>{_MATH_W_RPR}{m_rpr}<m:t xml:space=\"preserve\">{t}</m:t></m:r>"
+    return (
+        f"<m:r>{_MATH_W_RPR}<m:rPr><m:nor/></m:rPr>"
+        f"<m:t xml:space=\"preserve\">{t}</m:t></m:r>"
+    )
+
+
+def _omml_sup2(base: str) -> str:
+    return xml_msup_expr(xml_mrun(base), "2")
+
+
+def _omml_sub_var(token: str) -> str:
+    """Первая буква — основание, остальное — подстрочный индекс."""
+    return xml_msub(token[0], token[1:])
+
+
+# Длинные обозначения — раньше коротких (Вк.п. до Вк).
+_SUBSCRIPT_VARIABLES: tuple[str, ...] = tuple(
+    sorted(
+        (
+            "Вк.п.",
+            "Вк.а.",
+            "tоткл.",
+            "tотк.",
+            "Та.эк.",
+            "Iп.с.",
+            "Iкз(3)",
+            "Iраб.",
+            "Iраб",
+            "Iдд",
+            "Iн",
+            "Qдд",
+            "Qос",
+            "Qн",
+            "Q0",
+            "Qк",
+            "Uн",
+            "Втер.",
+            "Втер",
+            "Вк",
+            "Smin",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+
+
+def _subscript_var_boundary_ok(text: str, end: int) -> bool:
+    if end >= len(text):
+        return True
+    return text[end] in " =·+-,)(/<>;:" or text[end].isdigit()
+
+
+def _is_operand_tail_char(ch: str) -> bool:
+    if ch.isalnum() or ch in ",.√^":
+        return True
+    return "\u0400" <= ch <= "\u04ff"
+
+
+def _operand_start_before_slash(text: str, slash_i: int) -> int:
+    j = slash_i - 1
+    while j >= 0 and text[j] == " ":
+        j -= 1
+    if j < 0:
+        return 0
+    if text[j] == ")":
+        depth = 1
+        j -= 1
+        while j >= 0:
+            if text[j] == ")":
+                depth += 1
+            elif text[j] == "(":
+                depth -= 1
+                if depth == 0:
+                    return j
+            j -= 1
+        return 0
+    while j >= 0 and _is_operand_tail_char(text[j]):
+        j -= 1
+    return j + 1
+
+
+def _operand_end_after_slash(text: str, start: int) -> int:
+    n = len(text)
+    i = start
+    while i < n and text[i] == " ":
+        i += 1
+    if i >= n:
+        return n
+    if text[i] == "(":
+        depth = 1
+        j = i + 1
+        while j < n and depth > 0:
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+            j += 1
+        return j
+    depth = 0
+    j = i
+    while j < n:
+        ch = text[j]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        elif depth == 0 and ch in "/=+":
+            break
+        elif depth == 0 and ch == "−" and j > i:
+            break
+        j += 1
+    return j
+
+
+def _find_next_division_slash(text: str, start: int) -> int:
+    for i in range(start, len(text)):
+        if text[i] != "/":
+            continue
+        num_start = _operand_start_before_slash(text, i)
+        den_end = _operand_end_after_slash(text, i + 1)
+        if num_start < i and den_end > i + 1:
+            return i
+    return -1
+
+
+def _mm2_per_ka2s_inline_span(s: str, slash: int) -> tuple[int, int] | None:
+    """Размерность мм2/кА2·с — в одну строку через /, не стековая дробь."""
+    if slash >= 3 and s[slash - 3 : slash] == "мм2":
+        mm_start = slash - 3
+    elif slash >= 4 and s[slash - 4 : slash] == "мм^2":
+        mm_start = slash - 4
+    else:
+        return None
+    den_start = slash + 1
+    for den, den_len in (
+        ("кА2·с", 5),
+        ("кА2с", 4),
+        ("кА^2·с", 6),
+        ("кА^2с", 5),
+    ):
+        if s.startswith(den, den_start):
+            return mm_start, den_start + den_len
+    return None
+
+
+def _omml_mm2_per_ka2s_inline() -> str:
+    return (
+        _omml_sup2("мм")
+        + xml_mrun("/")
+        + _omml_sup2("кА")
+        + xml_mrun(MUL_SIGN)
+        + xml_mrun("с")
+    )
+
+
+def _parens_balanced(inner: str) -> bool:
+    depth = 0
+    for ch in inner:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def _omml_operand_fragment(segment: str) -> str:
+    segment = segment.strip()
+    if (
+        len(segment) >= 2
+        and segment[0] == "("
+        and segment[-1] == ")"
+        and _parens_balanced(segment[1:-1])
+    ):
+        return _omml_runs_plain_core(segment[1:-1])
+    return _omml_runs_plain_core(segment)
+
+
+def _at_e_exp_start(text: str, i: int) -> bool:
+    if i >= len(text) or text[i] != "e":
+        return False
+    if i + 2 < len(text) and text[i + 1] == "-" and text[i + 2] == "(":
+        return True
+    return i + 3 < len(text) and text[i + 1] == "^" and text[i + 2] == "-" and text[i + 3] == "("
+
+
+def _e_exp_close_index(text: str, i: int) -> int:
+    """Индекс ')' закрывающей e-(…) или e^-(…); иначе −1."""
+    if not _at_e_exp_start(text, i):
+        return -1
+    if text[i + 1] == "^":
+        open_paren = i + 3
+    else:
+        open_paren = i + 2
+    depth = 1
+    j = open_paren + 1
+    n = len(text)
+    while j < n and depth > 0:
+        if text[j] == "(":
+            depth += 1
+        elif text[j] == ")":
+            depth -= 1
+        j += 1
+    if depth != 0:
+        return -1
+    return j - 1
+
+
+def _find_next_e_exp_start(text: str, start: int) -> int:
+    for k in range(start, len(text)):
+        if _at_e_exp_start(text, k):
+            return k
+    return -1
+
+
+def _omml_core_scan(s: str) -> str:
+    """Сначала e-(…) / e^-(…) как надстрочная степень, затем дроби a/b."""
+    if not s:
+        return ""
+    out: list[str] = []
+    i = 0
+    n = len(s)
+    while i < n:
+        if _at_e_exp_start(s, i):
+            close = _e_exp_close_index(s, i)
+            if close < 0:
+                out.append(_omml_with_stacked_fractions(s[i]))
+                i += 1
+                continue
+            if s[i + 1] == "^":
+                power = s[i + 2 : close + 1]
+            else:
+                power = s[i + 1 : close + 1]
+            out.append(xml_mexp(_omml_with_stacked_fractions(power)))
+            i = close + 1
+            continue
+        next_e = _find_next_e_exp_start(s, i + 1)
+        chunk_end = next_e if next_e >= 0 else n
+        out.append(_omml_with_stacked_fractions(s[i:chunk_end]))
+        i = chunk_end
+    return "".join(out)
+
+
+def _omml_with_stacked_fractions(s: str) -> str:
+    """Косая черта / → стековая дробь m:f; мм2/кА2·с — исключение, в одну строку."""
+    if not s:
+        return ""
+    slash = _find_next_division_slash(s, 0)
+    if slash < 0:
+        return _omml_runs_plain_tokens(s)
+    unit_span = _mm2_per_ka2s_inline_span(s, slash)
+    if unit_span is not None:
+        mm_start, unit_end = unit_span
+        before = _omml_runs_plain_tokens(s[:mm_start]) if mm_start > 0 else ""
+        after = _omml_with_stacked_fractions(s[unit_end:])
+        return before + _omml_mm2_per_ka2s_inline() + after
+    num_start = _operand_start_before_slash(s, slash)
+    den_start = slash + 1
+    while den_start < len(s) and s[den_start] == " ":
+        den_start += 1
+    den_end = _operand_end_after_slash(s, den_start)
+    before = _omml_runs_plain_tokens(s[:num_start]) if num_start > 0 else ""
+    num = _omml_operand_fragment(s[num_start:slash])
+    den = _omml_operand_fragment(s[den_start:den_end])
+    after = _omml_with_stacked_fractions(s[den_end:])
+    return before + xml_mfrac(num, den) + after
+
+
+def _split_squared_paren_groups(text: str) -> list[tuple[str, str]]:
+    """Сегменты: ('plain', …) и ('sq', внутренность) для выражений (….)2."""
+    segments: list[tuple[str, str]] = []
+    plain_start = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "(":
+            i += 1
+            continue
+        depth = 1
+        j = i + 1
+        while j < n and depth > 0:
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+            j += 1
+        if depth != 0:
+            break
+        close = j - 1
+        if j < n and text[j] == "^" and j + 1 < n and text[j + 1] == "2":
+            next_ok = j + 2 >= n or text[j + 2] in " ·=,;)"
+            if next_ok:
+                if plain_start < i:
+                    segments.append(("plain", text[plain_start:i]))
+                segments.append(("sq", text[i + 1 : close]))
+                i = j + 2
+                plain_start = i
+                continue
+        if j < n and text[j] == "2":
+            next_ok = j + 1 >= n or text[j + 1] in " ·=,;)"
+            if next_ok:
+                if plain_start < i:
+                    segments.append(("plain", text[plain_start:i]))
+                segments.append(("sq", text[i + 1 : close]))
+                i = j + 1
+                plain_start = i
+                continue
+        i += 1
+    if plain_start < n:
+        segments.append(("plain", text[plain_start:n]))
+    return segments
+
+
+def _omml_runs_plain_tokens(s: str) -> str:
+    """Подстрочные индексы, мм², кА²с и прочие степени 2 (без (….)2 и без /)."""
+    if not s:
+        return ""
+    out: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(s)
+
+    def flush_buf() -> None:
+        if buf:
+            out.append(xml_mrun("".join(buf)))
+            buf.clear()
+
+    def try_subscript_variable() -> bool:
+        nonlocal i
+        for token in _SUBSCRIPT_VARIABLES:
+            if not s.startswith(token, i):
+                continue
+            end = i + len(token)
+            if token == "Iп.с." and end < n and s[end] in "2^":
+                continue
+            if not _subscript_var_boundary_ok(s, end):
+                continue
+            flush_buf()
+            out.append(_omml_sub_var(token))
+            i = end
+            return True
+        return False
+
+    def try_e_exponent() -> bool:
+        """e-((2·tотк.)/(Та.эк.)) — показатель степени надстрочный."""
+        nonlocal i
+        if i >= n or s[i] != "e" or i + 2 >= n or s[i + 1] != "-" or s[i + 2] != "(":
+            return False
+        depth = 1
+        j = i + 3
+        while j < n and depth > 0:
+            if s[j] == "(":
+                depth += 1
+            elif s[j] == ")":
+                depth -= 1
+            j += 1
+        if depth != 0:
+            return False
+        close = j - 1
+        power = s[i + 1 : close + 1]
+        flush_buf()
+        out.append(xml_mexp(_omml_runs_plain_core(power)))
+        i = close + 1
+        return True
+
+    def try_cyrillic_e_power() -> bool:
+        """е^k, е^0,07 — показатель степени надстрочный."""
+        nonlocal i
+        if i >= n or s[i] != "е":
+            return False
+        if i + 1 < n and s[i + 1] == "^":
+            m = re.match(r"\^([k\d,]+)", s[i + 1 :])
+            if m:
+                flush_buf()
+                out.append(xml_msup_expr(xml_mrun("е"), m.group(1)))
+                i += 1 + len(m.group(0))
+                return True
+        if i + 1 < n and s[i + 1] == "k" and (i + 2 >= n or s[i + 2] in " ·+=,;)(−-"):
+            flush_buf()
+            out.append(xml_msup_expr(xml_mrun("е"), "k"))
+            i += 2
+            return True
+        m = re.match(r"е([\d,]+)", s[i:])
+        if m and (i + len(m.group(0)) >= n or s[i + len(m.group(0))] in " ·+=,;)(−-"):
+            flush_buf()
+            out.append(xml_msup_expr(xml_mrun("е"), m.group(1)))
+            i += len(m.group(0))
+            return True
+        return False
+
+    while i < n:
+        if s.startswith("Iп.с.^2", i) and (i + 7 >= n or s[i + 7] in " ·=,;)"):
+            flush_buf()
+            out.append(xml_msup_expr(xml_msub("I", "п.с."), "2"))
+            i += 7
+            continue
+        if s.startswith("Iп.с.2", i) and (i + 6 >= n or s[i + 6] in " ·=,;)"):
+            flush_buf()
+            out.append(xml_msup_expr(xml_msub("I", "п.с."), "2"))
+            i += 6
+            continue
+        if try_e_exponent():
+            continue
+        if try_cyrillic_e_power():
+            continue
+        if s.startswith("мм^2", i):
+            flush_buf()
+            out.append(_omml_sup2("мм"))
+            i += 4
+            continue
+        if s.startswith("мм2", i):
+            flush_buf()
+            out.append(_omml_sup2("мм"))
+            i += 3
+            continue
+        if s.startswith("кА^2с", i):
+            flush_buf()
+            out.append(_omml_sup2("кА"))
+            out.append(xml_mrun("с"))
+            i += 5
+            continue
+        if (
+            s.startswith("кА^2", i)
+            and i + 5 < n
+            and s[i + 4] == MUL_SIGN
+            and s[i + 5] == "с"
+        ):
+            flush_buf()
+            out.append(_omml_sup2("кА"))
+            out.append(xml_mrun(MUL_SIGN))
+            out.append(xml_mrun("с"))
+            i += 6
+            continue
+        if s.startswith("кА2с", i):
+            flush_buf()
+            out.append(_omml_sup2("кА"))
+            out.append(xml_mrun("с"))
+            i += 4
+            continue
+        if (
+            s.startswith("кА2", i)
+            and i + 4 < n
+            and s[i + 3] == MUL_SIGN
+            and s[i + 4] == "с"
+        ):
+            flush_buf()
+            out.append(_omml_sup2("кА"))
+            out.append(xml_mrun(MUL_SIGN))
+            out.append(xml_mrun("с"))
+            i += 5
+            continue
+        if s.startswith("S^2", i) and (i + 3 >= n or s[i + 3] in " =/,)"):
+            flush_buf()
+            out.append(_omml_sup2("S"))
+            i += 3
+            continue
+        if s.startswith("S2", i) and (i + 2 >= n or s[i + 2] in " =/,)"):
+            flush_buf()
+            out.append(_omml_sup2("S"))
+            i += 2
+            continue
+        caret_sq = re.match(r"([\d,]+)\^2(?=[ ·=,;)]|$)", s[i:])
+        if caret_sq:
+            flush_buf()
+            out.append(_omml_sup2(caret_sq.group(1)))
+            i += len(caret_sq.group(0))
+            continue
+        if try_subscript_variable():
+            continue
+        if s[i] == MUL_SIGN:
+            flush_buf()
+            out.append(xml_mrun(MUL_SIGN))
+            i += 1
+            continue
+        buf.append(s[i])
+        i += 1
+
+    flush_buf()
+    return "".join(out)
+
+
+def _omml_runs_plain_core(s: str) -> str:
+    return _omml_core_scan(s)
+
+
+def omml_runs_from_plain_text(text: str) -> str:
+    """Фрагмент формулы: подстрочные индексы, (….)², мм², кА²с."""
+    if not text:
+        return ""
+    s = _math_plain_text(normalize_mul_sign(text)).replace("мм²", "мм2").replace("кА²", "кА2")
+    chunks: list[str] = []
+    for kind, content in _split_squared_paren_groups(s):
+        if kind == "plain":
+            if content:
+                chunks.append(_omml_runs_plain_core(content))
+        else:
+            inner = _omml_runs_plain_core(content)
+            chunks.append(xml_msup_expr(xml_mdelim(inner), "2"))
+    return "".join(chunks)
+
+
+def omml_plain_formula(text: str) -> str:
+    """Плоский текст формулы → OMML (подстрочные/надстрочные, · отдельным m:r)."""
+    return omml_runs_from_plain_text(normalize_mul_sign(text))
+
+
+def omml_plain_formula_inline(text: str) -> str:
+    """Inline-формула в одном абзаце с текстом — тот же размер, что и display."""
+    return omml_plain_formula(text)
 
 
 def xml_msubsup(base: str, sub: str, sup: str) -> str:
@@ -249,6 +770,7 @@ def xml_msqrt(inner: str) -> str:
 
 
 def xml_mexp(power_inner: str) -> str:
+    # m:sup — без лишнего m:e (как xml_msup), иначе Word не открывает docx.
     return (
         "<m:sSup>"
         f"<m:e>{xml_mrun('e')}</m:e>"
@@ -338,11 +860,14 @@ def _omml_theta_k_exp_pair(b_inner: str, s_mm: str) -> tuple[str, str]:
 
 
 def omml_theta_k_schema_string(s_mm: str = "S") -> str:
-    """Θк = Θн·e^(19,58·Bтер/S²) + a·e^(19,58·Bтер/S²−1)."""
+    """Θк = Θн·e^κ + a·(e^κ−1), κ = 19,58·Bтер/S²."""
     thk = xml_msub("Θ", "к")
     thn = xml_msub("Θ", "н")
-    e1, e2 = _omml_theta_k_exp_pair(xml_msub("B", "тер"), s_mm)
-    return f"{thk}{xml_mrun(' = ')}{thn}{xml_mrun('·')}{e1}{xml_mrun(' + ')}{xml_mrun('a')}{xml_mrun('·')}{e2}"
+    e1, _ = _omml_theta_k_exp_pair(xml_msub("B", "тер"), s_mm)
+    return (
+        f"{thk}{xml_mrun(' = ')}{thn}{xml_mrun('·')}{e1}"
+        f"{xml_mrun(' + ')}{xml_mrun('a')}{xml_mrun('·(')}{e1}{xml_mrun(' − 1)')}"
+    )
 
 
 def omml_theta_k_string(
@@ -356,9 +881,9 @@ def omml_theta_k_string(
     thk = xml_msub("Θ", "к")
     lead = xml_mrun(theta_n_num) if theta_n_num else xml_msub("Θ", "н")
     b_piece = xml_mrun(b_ter_num) if b_ter_num else xml_msub("B", "тер")
-    e1, e2 = _omml_theta_k_exp_pair(b_piece, s_mm)
+    e1, _ = _omml_theta_k_exp_pair(b_piece, s_mm)
     return (
-        f"{thk}{xml_mrun(' = ')}{lead}{xml_mrun('·')}{e1}{xml_mrun(' + 228·')}{e2}"
+        f"{thk}{xml_mrun(' = ')}{lead}{xml_mrun('·')}{e1}{xml_mrun(' + 228·(')}{e1}{xml_mrun(' − 1)')}"
         f"{xml_mrun(' = ')}{xml_mrun(theta_k)}{xml_mrun(' \u00B0C')}"
     )
 

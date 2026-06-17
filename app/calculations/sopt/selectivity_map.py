@@ -9,10 +9,9 @@ import numpy as np
 
 from app.shared.user_errors import MSG_MISSING_MATPLOTLIB
 
+from .kc import kc_from_r_kz
 from .models import SoptEquipmentItem
 from .resistance import item_resistance_ohm
-
-KC_DEFAULT = 0.6
 _CURVE_MULTIPLIERS = {"B": 5, "C": 10, "D": 20, "K": 14, "Z": 3}
 
 
@@ -31,83 +30,77 @@ def _kz_for_selectivity(item: SoptEquipmentItem) -> bool:
     return item.item_type == "kz_point" and item.include_in_selectivity
 
 
-def _furthest_kz_point_in_zone(items: list[SoptEquipmentItem], breaker_index: int) -> str:
-    """Крайняя (последняя по цепи) отмеченная точка КЗ в зоне нижнего автомата."""
-    last_name = ""
-    for idx in range(breaker_index + 1, len(items)):
-        if items[idx].item_type == "breaker":
-            break
-        if _kz_for_selectivity(items[idx]):
-            designation = items[idx].designation.strip()
-            if designation:
-                last_name = designation
-    if last_name:
-        return last_name
-    for item in reversed(items):
-        if _kz_for_selectivity(item):
-            designation = item.designation.strip()
-            if designation:
-                return designation
-    return "K1"
+def _breaker_label(item: SoptEquipmentItem) -> str:
+    return item.designation.strip() or f"{int(item.rated_current_a)} А"
 
 
-def _kz_point_sc_currents(
-    items: list[SoptEquipmentItem],
+def _chain_r_at_index(items: list[SoptEquipmentItem], kz_idx: int) -> float:
+    chain_r = 0.0
+    for idx in range(kz_idx):
+        item = items[idx]
+        if item.item_type == "kz_point":
+            continue
+        comp_r = item_resistance_ohm(item)
+        if comp_r > 0:
+            chain_r += comp_r
+    return chain_r
+
+
+def _sc_currents_at_chain_r(
+    chain_r: float,
     *,
     r_ab: float,
     r_per: float,
     r_gr: float,
     n_total_elements: int,
-    kc: float = KC_DEFAULT,
 ) -> tuple[float, float]:
-    """Максимальный Iкз и минимальный Iкзд по отмеченным точкам КЗ подраздела."""
-    running_components: list[float] = []
-    i_kz_values: list[float] = []
-    i_kzd_values: list[float] = []
-    has_any_kz = any(item.item_type == "kz_point" for item in items)
-
-    def append_point(chain_r: float) -> None:
-        r_kz = r_ab + r_per + 2 * chain_r
-        if r_kz <= 0:
-            return
-        e_calc = 1.7 if r_kz < r_gr else 1.93
-        i_kz = e_calc * n_total_elements / r_kz
-        i_kzd = kc * i_kz
-        if i_kz > 0:
-            i_kz_values.append(i_kz)
-        if i_kzd > 0:
-            i_kzd_values.append(i_kzd)
-
-    for item in items:
-        if item.item_type == "kz_point":
-            if item.include_in_selectivity:
-                append_point(sum(running_components))
-            continue
-        comp_r = item_resistance_ohm(item)
-        if comp_r > 0:
-            running_components.append(comp_r)
-
-    if not i_kz_values and not has_any_kz:
-        append_point(sum(running_components))
-
-    if not i_kz_values or not i_kzd_values:
+    r_kz = r_ab + r_per + 2 * chain_r
+    if r_kz <= 0:
         return 0.0, 0.0
-    return max(i_kz_values), min(i_kzd_values)
+    e_calc = 1.7 if r_kz < r_gr else 1.93
+    i_kz = e_calc * n_total_elements / r_kz
+    i_kzd = kc_from_r_kz(r_kz) * i_kz
+    if i_kz <= 0 or i_kzd <= 0:
+        return 0.0, 0.0
+    return i_kz, i_kzd
 
 
-def _breaker_indices(items: list[SoptEquipmentItem]) -> list[int]:
-    return [idx for idx, item in enumerate(items) if item.item_type == "breaker"]
+def _breaker_pair_before_kz(
+    items: list[SoptEquipmentItem],
+    kz_idx: int,
+    *,
+    section_head_breaker: SoptEquipmentItem | None = None,
+) -> tuple[SoptEquipmentItem, SoptEquipmentItem] | None:
+    """Верхний и нижний автомат на пути к отмеченной точке КЗ (два ближайших к точке).
 
+    Если в подразделе только один автомат перед точкой КЗ, верхним берётся
+    вводной автомат раздела (2QF4, 1QF1 — не веточный SF*).
+    """
+    downstream_idx: int | None = None
+    upstream_idx: int | None = None
+    for idx in range(kz_idx - 1, -1, -1):
+        if items[idx].item_type != "breaker":
+            continue
+        if downstream_idx is None:
+            downstream_idx = idx
+            continue
+        upstream_idx = idx
+        break
 
-def _breaker_label(item: SoptEquipmentItem) -> str:
-    return item.designation.strip() or f"{int(item.rated_current_a)} А"
+    if downstream_idx is None:
+        return None
 
+    downstream = items[downstream_idx]
+    if upstream_idx is not None:
+        return items[upstream_idx], downstream
 
-def _selectivity_breaker_pairs(items: list[SoptEquipmentItem]) -> list[tuple[int, int]]:
-    breaker_idxs = _breaker_indices(items)
-    if len(breaker_idxs) < 2:
-        return []
-    return list(zip(breaker_idxs, breaker_idxs[1:], strict=False))
+    if section_head_breaker is not None:
+        head_label = _breaker_label(section_head_breaker).casefold()
+        down_label = _breaker_label(downstream).casefold()
+        if head_label and head_label != down_label:
+            return section_head_breaker, downstream
+
+    return None
 
 
 def _curve_params_from_item(item: SoptEquipmentItem) -> tuple[str, float, float]:
@@ -203,6 +196,8 @@ def create_selectivity_map(
     ax.set_xlabel("Ток (А)")
     ax.set_ylabel("Время (с)")
     ax.grid(True, which="both", ls="--")
+    ax.set_xlim(left=max(1, down_x[0]), right=max(i_max_a * 5, 10000))
+    ax.set_ylim(0.001, 1000)
     ax.legend(loc="upper right")
 
     overlap = False
@@ -228,31 +223,35 @@ def build_subsection_selectivity_maps(
     r_per: float,
     r_gr: float,
     n_total_elements: int,
-    kc: float = KC_DEFAULT,
+    section_head_breaker: SoptEquipmentItem | None = None,
 ) -> list[SelectivityMapResult]:
-    pairs = _selectivity_breaker_pairs(items)
-    if not pairs:
-        return []
-
-    i_max_a, i_min_a = _kz_point_sc_currents(
-        items,
-        r_ab=r_ab,
-        r_per=r_per,
-        r_gr=r_gr,
-        n_total_elements=n_total_elements,
-        kc=kc,
-    )
-    if i_max_a <= 0 or i_min_a <= 0:
-        return []
-
+    """По одной карте селективности на каждую отмеченную точку КЗ подраздела."""
     results: list[SelectivityMapResult] = []
-    for up_idx, down_idx in pairs:
-        upstream = items[up_idx]
-        downstream = items[down_idx]
+    for kz_idx, item in enumerate(items):
+        if not _kz_for_selectivity(item):
+            continue
+        pair = _breaker_pair_before_kz(
+            items,
+            kz_idx,
+            section_head_breaker=section_head_breaker,
+        )
+        if pair is None:
+            continue
+        upstream, downstream = pair
+        i_max_a, i_min_a = _sc_currents_at_chain_r(
+            _chain_r_at_index(items, kz_idx),
+            r_ab=r_ab,
+            r_per=r_per,
+            r_gr=r_gr,
+            n_total_elements=n_total_elements,
+        )
+        if i_max_a <= 0 or i_min_a <= 0:
+            continue
         image, overlap = create_selectivity_map(upstream, downstream, i_min_a, i_max_a)
+        block_title = item.designation.strip() or f"K{kz_idx + 1}"
         results.append(
             SelectivityMapResult(
-                block_title=_furthest_kz_point_in_zone(items, down_idx),
+                block_title=block_title,
                 upstream_label=_breaker_label(upstream),
                 downstream_label=_breaker_label(downstream),
                 i_max_a=i_max_a,
